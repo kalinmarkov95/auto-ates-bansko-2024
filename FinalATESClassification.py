@@ -228,16 +228,44 @@ class AutomizedATESAlgorithm(QgsProcessingAlgorithm):
             return originalATESClassification
     
 
-    def polygonize(self, rasterLayer, nameOfField, outputlocation):
+    def find_longest_border_value(self, data, lab, num_labels, nodata_value):
         
-        outputFile = os.path.join(outputlocation, "ATESVector.shp")
-        parameters = {'INPUT': rasterLayer,
-                      'FIELD': nameOfField,
-                      'OUTPUT': outputFile}
-        processing.run('gdal:polygonize', parameters)
-        return outputFile
+        rows, cols = data.shape
+        result = data.copy()
         
+        # Iterate through each no-data region
+        for region_num in range(1, num_labels + 1):
+            
+            # Find the coordinates of the current no-data region
+            region_coords = numpy.where(lab == region_num)
+            neighbor_counts = {}
+            considered_indices = set()
 
+            # Iterate through each pixel in the no-data region
+            for (i, j) in zip(*region_coords):
+                
+                if data[i, j] == nodata_value:
+                    # Find neighbors
+                    for di in [-1, 0, 1]:
+                        for dj in [-1, 0, 1]:
+                            ni, nj = i + di, j + dj
+                            if (ni, nj) not in considered_indices:
+                                if 0 <= ni < rows and 0 <= nj < cols:
+                                    if data[ni, nj] != nodata_value:
+                                        region_value = data[ni, nj]
+                                        if region_value in neighbor_counts:
+                                            neighbor_counts[region_value] += 1
+                                        else:
+                                            neighbor_counts[region_value] = 1
+                                considered_indices.add((ni, nj))
+            # Find the region with the maximum shared border
+            if neighbor_counts:
+                dominant_region = max(neighbor_counts, key=neighbor_counts.get)
+                result[region_coords] = dominant_region
+                    
+        return result
+        
+   
     def processAlgorithm(self, parameters, context, feedback):
         
         workingDirectory = self.createWorkingDirectory(parameters['FOLDERFORINTERMEDIATEPROCESSING'])
@@ -289,7 +317,6 @@ class AutomizedATESAlgorithm(QgsProcessingAlgorithm):
         src1 = src1.reshape(1, src1.shape[0], src1.shape[1])
         
         labelledArray, num_labels = morphology.label(src1, connectivity=2, return_num=True)
-        
         result = {'labeled_array': labelledArray, 'original_values': src1}
 
         # Get the labeled array and original values from the result dictionary
@@ -299,39 +326,38 @@ class AutomizedATESAlgorithm(QgsProcessingAlgorithm):
         rg = numpy.arange(1, num_labels+1, 1)
 
         for i in rg:
-            occurrences = numpy.count_nonzero(lab == i)
             
+            occurrences = numpy.count_nonzero(lab == i)            
             indices = numpy.where(lab == i)
             clusterValues = original_values[indices]
             atesClassOfCluster = clusterValues[0]
             
             if atesClassOfCluster == 1:
                 if occurrences < numCellsSimple:
-                    lab[numpy.where(lab == i)] = 0
+                    original_values[indices] = 0
             elif atesClassOfCluster == 2:
                 if occurrences < numCellsChallenging:
-                    lab[numpy.where(lab == i)] = 0
+                    original_values[indices] = 0
             else:
                 if occurrences < numCellsComplex:
-                    lab[numpy.where(lab == i)] = 0
-
+                    original_values[indices] = 0
+            
         lab = lab.astype('float32')
+        lab = lab.reshape(lab.shape[1], lab.shape[2])
+        original_values = original_values.reshape(original_values.shape[1], original_values.shape[2])
         
-        data = rasterio.fill.fillnodata(src1, lab, smoothing_iterations=0)
+        data = self.find_longest_border_value(original_values, lab, num_labels, 0)
+        
         data[numpy.where(data == 0)] = -9999
         data = numpy.round(data)
         data = data.astype('int16')
                 
         output_file = os.path.join(parameters["OUTPUTFOLDER"], "FinalATES.tif")
-        
-        data = data.reshape(data.shape[1], data.shape[2])
         with rasterio.open(fluxCategorizedIntoATESClasses) as src:
             profile = src.profile
             profile.update({"driver": "GTiff", "nodata": -9999, 'dtype': 'int16'})
             with rasterio.open(output_file, 'w', **profile) as dst:
                 dst.write(data, 1)
-        
-        #self.polygonize(output_file, "ATES", workingDirFinalATESCombination)
 
         return {}
         
