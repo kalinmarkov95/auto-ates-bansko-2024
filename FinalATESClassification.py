@@ -312,16 +312,16 @@ class AutomizedATESAlgorithm(QgsProcessingAlgorithm):
         numCellsChallenging = numpy.around(islandFilterSizeChallenging / (pixelSizeX * pixelSizeY))
         numCellsComplex = numpy.around(islandFilterSizeComplex / (pixelSizeX * pixelSizeY))
         
-        src1 = rasterio.open(output_file)
-        src1 = src1.read(1)
-        src1 = src1.reshape(1, src1.shape[0], src1.shape[1])
+        originalATESClasses = rasterio.open(output_file)
+        originalATESClasses = originalATESClasses.read(1)
+        originalATESClasses = originalATESClasses.reshape(1, originalATESClasses.shape[0], originalATESClasses.shape[1])
         
-        labelledArray, num_labels = morphology.label(src1, connectivity=2, return_num=True)
-        result = {'labeled_array': labelledArray, 'original_values': src1}
+        labelledArray, num_labels = morphology.label(originalATESClasses, connectivity=2, return_num=True)
+        result = {'labeled_array': labelledArray, 'original_values': originalATESClasses}
 
         # Get the labeled array and original values from the result dictionary
         lab = result['labeled_array']
-        original_values = result['original_values']
+        values = result['original_values']
        
         rg = numpy.arange(1, num_labels+1, 1)
 
@@ -329,39 +329,34 @@ class AutomizedATESAlgorithm(QgsProcessingAlgorithm):
             
             occurrences = numpy.count_nonzero(lab == i)            
             indices = numpy.where(lab == i)
-            clusterValues = original_values[indices]
+            clusterValues = values[indices]
             atesClassOfCluster = clusterValues[0]
             
             if atesClassOfCluster == 1:
                 if occurrences < numCellsSimple:
-                    original_values[indices] = 0
+                    values[indices] = 0
             elif atesClassOfCluster == 2:
                 if occurrences < numCellsChallenging:
-                    original_values[indices] = 0
+                    values[indices] = 0
             else:
                 if occurrences < numCellsComplex:
-                    original_values[indices] = 0
-            
-        lab = lab.astype('float32')
+                    values[indices] = 0
+
         lab = lab.reshape(lab.shape[1], lab.shape[2])
-        original_values = original_values.reshape(original_values.shape[1], original_values.shape[2])
+        values = values.reshape(values.shape[1], values.shape[2])
         
         while True:
             
-            original_values = self.find_longest_border_value(original_values, lab, num_labels, 0)
-            if original_values.min() > 0:
+            values = self.find_longest_border_value(values, lab, num_labels, 0)
+            if values.min() > 0:
                 break
-
-        original_values[numpy.where(original_values == 0)] = -9999
-        original_values = numpy.round(original_values)
-        original_values = original_values.astype('int16')
                 
         output_file = os.path.join(parameters["OUTPUTFOLDER"], "FinalATES.tif")
         with rasterio.open(fluxCategorizedIntoATESClasses) as src:
             profile = src.profile
             profile.update({"driver": "GTiff", "nodata": -9999, 'dtype': 'int16'})
             with rasterio.open(output_file, 'w', **profile) as dst:
-                dst.write(original_values, 1)
+                dst.write(values, 1)
 
         return {}
         
