@@ -34,6 +34,7 @@ from qgis import processing
 import numpy
 import glob
 import os
+import math
 import rasterio, rasterio.mask
 from rasterio.fill import fillnodata
 from osgeo import gdal
@@ -44,6 +45,7 @@ import sys
 import shutil
 import subprocess
 from skimage import morphology
+from PIL import Image
 
 class AutomizedATESAlgorithm(QgsProcessingAlgorithm):
 
@@ -111,7 +113,7 @@ class AutomizedATESAlgorithm(QgsProcessingAlgorithm):
         should provide a basic description about what the algorithm does and the
         parameters and outputs associated with it..
         """
-        return self.tr("This algorithm performs the final classification procedure to get the resulting ATES, based on the algorithm used for Bansko ATES 2024. In order for this algorithm to work, you must have SAGANG and GDAL installed in QGIS.")
+        return self.tr("This algorithm performs the final classification procedure to get the resulting ATES, based on the algorithm used for Bansko ATES 2024. In order for this algorithm to work, you must have SAGANG and GDAL installed in QGIS. Also, the three input layers must have EXACTLY the same width and height (number of rows and cols) and the same pixel size - so they must match 100% spatially in order for this algorithm to work! Otherwise, weird behavior can be expected!")
 
 
     def initAlgorithm(self, config=None):
@@ -222,16 +224,23 @@ class AutomizedATESAlgorithm(QgsProcessingAlgorithm):
     
     def combineLayers(self, slopeBinary, forestDensityBinary, originalATESClassification):
         
+        #if originalATESClassification == 3:
+        #    QgsMessageLog.logMessage("slopeBinary is:" + str(slopeBinary), "AutoATES Bansko 2024")
+        #    QgsMessageLog.logMessage("forestDensityBinary is:" + str(forestDensityBinary), "AutoATES Bansko 2024")
+        #    QgsMessageLog.logMessage("originalATESClassification is:" + str(originalATESClassification), "AutoATES Bansko 2024")
+        #    QgsMessageLog.logMessage("\n", "AutoATES Bansko 2024")
+        
         if slopeBinary == 1 and forestDensityBinary == 1:
             return 3
         else:
             return originalATESClassification
     
 
-    def find_longest_border_value(self, data, lab, num_labels, nodata_value):
+    def find_longest_border_value(self, data, lab, num_labels, valueThatWillBeCastToNeighboring):
         
         rows, cols = data.shape
         result = data.copy()
+        numberOfZonesSmoothedOut = 0
         
         # Iterate through each no-data region
         for region_num in range(1, num_labels + 1):
@@ -244,26 +253,30 @@ class AutomizedATESAlgorithm(QgsProcessingAlgorithm):
             # Iterate through each pixel in the no-data region
             for (i, j) in zip(*region_coords):
                 
-                if data[i, j] == nodata_value:
+                if data[i, j] == valueThatWillBeCastToNeighboring:
+                    
+                    numberOfZonesSmoothedOut = numberOfZonesSmoothedOut + 1
                     # Find neighbors
                     for di in [-1, 0, 1]:
                         for dj in [-1, 0, 1]:
                             ni, nj = i + di, j + dj
                             if (ni, nj) not in considered_indices:
                                 if 0 <= ni < rows and 0 <= nj < cols:
-                                    if data[ni, nj] != nodata_value:
+                                    if data[ni, nj] != valueThatWillBeCastToNeighboring: # and data[ni,nj] != -1:
                                         region_value = data[ni, nj]
                                         if region_value in neighbor_counts:
                                             neighbor_counts[region_value] += 1
                                         else:
                                             neighbor_counts[region_value] = 1
                                 considered_indices.add((ni, nj))
+            
             # Find the region with the maximum shared border
             if neighbor_counts:
                 dominant_region = max(neighbor_counts, key=neighbor_counts.get)
                 result[region_coords] = dominant_region
-                    
-        return result
+
+        QgsMessageLog.logMessage("Number of zones smoothed out:" + str(numberOfZonesSmoothedOut), "AutoATES Bansko 2024")
+        return result, numberOfZonesSmoothedOut
         
    
     def processAlgorithm(self, parameters, context, feedback):
@@ -280,18 +293,34 @@ class AutomizedATESAlgorithm(QgsProcessingAlgorithm):
         fluxCategorizedIntoATESClassesGdal = gdal.Open(fluxCategorizedIntoATESClasses)
         originalATESClassesArray = numpy.array(fluxCategorizedIntoATESClassesGdal.GetRasterBand(1).ReadAsArray())
         
+        #fluxCategorizedIntoATESClassesIm = Image.open(fluxCategorizedIntoATESClasses)
+        #originalATESClassesArray = numpy.array(fluxCategorizedIntoATESClassesIm)
+        
         slopeBinaryClassified45DegreesAndAboveGdal = gdal.Open(slopeBinaryClassified45DegreesAndAbove)
         slopeBinaryArray = numpy.array(slopeBinaryClassified45DegreesAndAboveGdal.GetRasterBand(1).ReadAsArray())
         
+        #slopeBinaryClassified45DegreesAndAboveIm = Image.open(slopeBinaryClassified45DegreesAndAbove)
+        #slopeBinaryArray = numpy.array(slopeBinaryClassified45DegreesAndAboveIm)
+                
         forestDensityLayerBinaryClassifiedBelow25PercentGdal = gdal.Open(forestDensityLayerBinaryClassifiedBelow25Percent)
         forestDensityBinaryArray = numpy.array(forestDensityLayerBinaryClassifiedBelow25PercentGdal.GetRasterBand(1).ReadAsArray())
+        
+        #forestDensityLayerBinaryClassifiedBelow25PercentIm = Image.open(forestDensityLayerBinaryClassifiedBelow25Percent)
+        #forestDensityBinaryArray = numpy.array(forestDensityLayerBinaryClassifiedBelow25PercentIm)
+        
+        QgsMessageLog.logMessage("slope array shape is:" + str(slopeBinaryArray.shape), "AutoATES Bansko 2025")
+        QgsMessageLog.logMessage("forest array shape is:" + str(forestDensityBinaryArray.shape), "AutoATES Bansko 2025")
+        QgsMessageLog.logMessage("originalATESClassesArray array shape is:" + str(originalATESClassesArray.shape), "AutoATES Bansko 2025")
         
         combined_array = numpy.zeros_like(originalATESClassesArray)
 
         for i in range(combined_array.shape[0]):
             for j in range(combined_array.shape[1]):
+                #if slopeBinaryArray[i, j] < 0 or forestDensityBinaryArray[i, j] < 0 or originalATESClassesArray[i, j] < 0:
+                #    combined_array[i, j] = -1
+                #else:
                 combined_array[i, j] = self.combineLayers(slopeBinaryArray[i, j], forestDensityBinaryArray[i, j], originalATESClassesArray[i, j])
-        
+                
         output_file = os.path.join(workingDirectory, "ATESClassesCombined.tif")
         
         with rasterio.open(fluxCategorizedIntoATESClasses) as src:
@@ -315,6 +344,7 @@ class AutomizedATESAlgorithm(QgsProcessingAlgorithm):
         originalATESClasses = rasterio.open(output_file)
         originalATESClasses = originalATESClasses.read(1)
         originalATESClasses = originalATESClasses.reshape(1, originalATESClasses.shape[0], originalATESClasses.shape[1])
+        #originalATESClasses[originalATESClasses == -1] = numpy.nan
         
         labelledArray, num_labels = morphology.label(originalATESClasses, connectivity=2, return_num=True)
         result = {'labeled_array': labelledArray, 'original_values': originalATESClasses}
@@ -345,10 +375,28 @@ class AutomizedATESAlgorithm(QgsProcessingAlgorithm):
         lab = lab.reshape(lab.shape[1], lab.shape[2])
         values = values.reshape(values.shape[1], values.shape[2])
         
+        output_file = os.path.join(workingDirectory, "Lab.tif")
+        
+        with rasterio.open(fluxCategorizedIntoATESClasses) as src:
+            profile = src.profile
+            with rasterio.open(output_file, 'w', **profile) as dst:
+                dst.write(lab, 1)
+        
+        #values[values < 0] = -1
+        output_file = os.path.join(workingDirectory, "Values.tif")
+        
+        with rasterio.open(fluxCategorizedIntoATESClasses) as src:
+            profile = src.profile
+            with rasterio.open(output_file, 'w', **profile) as dst:
+                dst.write(values, 1)
+        
         while True:
             
-            values = self.find_longest_border_value(values, lab, num_labels, 0)
-            if values.min() > 0:
+            QgsMessageLog.logMessage("In the loop", "AutoATES Bansko 2024")
+            values, numberOfZonesSmoothedOut = self.find_longest_border_value(values, lab, num_labels, 0)
+            
+            #QgsMessageLog.logMessage("Values min is:" + str(values.min()), "AutoATES Bansko 2024")
+            if numberOfZonesSmoothedOut == 0:
                 break
                 
         output_file = os.path.join(parameters["OUTPUTFOLDER"], "FinalATES.tif")
