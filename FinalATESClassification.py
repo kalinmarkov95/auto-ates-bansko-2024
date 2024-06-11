@@ -322,7 +322,7 @@ class AutomizedATESAlgorithm(QgsProcessingAlgorithm):
         # Get the labeled array and original values from the result dictionary
         lab = result['labeled_array']
         original_values = result['original_values']
-
+       
         rg = numpy.arange(1, num_labels+1, 1)
 
         for i in rg:
@@ -346,18 +346,22 @@ class AutomizedATESAlgorithm(QgsProcessingAlgorithm):
         lab = lab.reshape(lab.shape[1], lab.shape[2])
         original_values = original_values.reshape(original_values.shape[1], original_values.shape[2])
         
-        data = self.find_longest_border_value(original_values, lab, num_labels, 0)
-        
-        data[numpy.where(data == 0)] = -9999
-        data = numpy.round(data)
-        data = data.astype('int16')
+        while True:
+            
+            original_values = self.find_longest_border_value(original_values, lab, num_labels, 0)
+            if original_values.min() > 0:
+                break
+
+        original_values[numpy.where(original_values == 0)] = -9999
+        original_values = numpy.round(original_values)
+        original_values = original_values.astype('int16')
                 
         output_file = os.path.join(parameters["OUTPUTFOLDER"], "FinalATES.tif")
         with rasterio.open(fluxCategorizedIntoATESClasses) as src:
             profile = src.profile
             profile.update({"driver": "GTiff", "nodata": -9999, 'dtype': 'int16'})
             with rasterio.open(output_file, 'w', **profile) as dst:
-                dst.write(data, 1)
+                dst.write(original_values, 1)
 
         return {}
         
