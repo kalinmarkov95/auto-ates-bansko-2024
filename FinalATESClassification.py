@@ -170,7 +170,7 @@ class AutomizedATESAlgorithm(QgsProcessingAlgorithm):
         return fullBaseWorkingDir
         
 
-    def categorizeFluxIntoATESClasses(self, fluxCategorized, outputlocation):
+    def categorizeFluxIntoATESClasses(self, fluxCategorized, outputlocation, no_data_value):
         
         outputFile = os.path.join(outputlocation, "FluxCategorizedIntoATESClasses.tif")
         entries = []
@@ -183,11 +183,36 @@ class AutomizedATESAlgorithm(QgsProcessingAlgorithm):
         
         calculation = QgsRasterCalculator(' if(fluxCategorizedLayerBand@1 < 0.03, 1, if(fluxCategorizedLayerBand@1 < 0.35, 2, 3))', outputFile, 'GTiff', fluxCategorized.extent(), fluxCategorized.width(), fluxCategorized.height(), entries)
         calculation.processCalculation()
+        
+        # Open the input raster
+        with rasterio.open(outputFile) as src:
+            
+            # Read the input raster as a numpy array
+            flux_data = src.read(1)
+            input_profile = src.profile
+            input_nodata = src.nodata
+            
+            # Create a mask for nodata values
+            nodata_mask = flux_data == input_nodata
+            
+            # Set nodata values in the categorized array
+            flux_data[nodata_mask] = no_data_value
+            
+            # Update the profile for the output raster
+            output_profile = input_profile.copy()
+            output_profile.update({
+                'dtype': 'int16',
+                'nodata': no_data_value
+            })
+        
+        # Write the categorized data to a new raster file
+        with rasterio.open(outputFile, 'w', **output_profile) as dst:
+            dst.write(flux_data, 1)
                 
         return outputFile
     
 
-    def categorizeSlopeBinary45DegreesAndAbove(self, slope, outputlocation):
+    def categorizeSlopeBinary45DegreesAndAbove(self, slope, outputlocation, no_data_value):
         
         outputFile = os.path.join(outputlocation, "SlopeBinary45DegreesAndAbove.tif")
         entries = []
@@ -200,11 +225,36 @@ class AutomizedATESAlgorithm(QgsProcessingAlgorithm):
         
         calculation = QgsRasterCalculator(' if(slopeCategorizedLayerBand@1 < 45, 0, 1)', outputFile, 'GTiff', slope.extent(), slope.width(), slope.height(), entries)
         calculation.processCalculation()
-                
+        
+        # Open the input raster
+        with rasterio.open(outputFile) as src:
+            
+            # Read the input raster as a numpy array
+            slope_data = src.read(1)
+            input_profile = src.profile
+            input_nodata = src.nodata
+            
+            # Create a mask for nodata values
+            nodata_mask = slope_data == input_nodata
+            
+            # Set nodata values in the categorized array
+            slope_data[nodata_mask] = no_data_value
+            
+            # Update the profile for the output raster
+            output_profile = input_profile.copy()
+            output_profile.update({
+                'dtype': 'int16',
+                'nodata': no_data_value
+            })
+        
+        # Write the categorized data to a new raster file
+        with rasterio.open(outputFile, 'w', **output_profile) as dst:
+            dst.write(slope_data, 1)
+
         return outputFile
         
 
-    def categorizeForestDensityBinaryBelow25Percent(self, forestDensity, outputlocation):
+    def categorizeForestDensityBinaryBelow25Percent(self, forestDensity, outputlocation, no_data_value):
         
         outputFile = os.path.join(outputlocation, "ForestDensityBinaryBelow25Percent.tif")
         entries = []
@@ -217,7 +267,32 @@ class AutomizedATESAlgorithm(QgsProcessingAlgorithm):
         
         calculation = QgsRasterCalculator('if(forestDensityLayerCategorizedBand@1 < 25, 1, 0)', outputFile, 'GTiff', forestDensity.extent(), forestDensity.width(), forestDensity.height(), entries)
         calculation.processCalculation()
-                
+        
+         # Open the input raster
+        with rasterio.open(outputFile) as src:
+            
+            # Read the input raster as a numpy array
+            forest_density_data = src.read(1)
+            input_profile = src.profile
+            input_nodata = src.nodata
+            
+            # Create a mask for nodata values
+            nodata_mask = forest_density_data == input_nodata
+            
+            # Set nodata values in the categorized array
+            forest_density_data[nodata_mask] = no_data_value
+            
+            # Update the profile for the output raster
+            output_profile = input_profile.copy()
+            output_profile.update({
+                'dtype': 'int16',
+                'nodata': no_data_value
+            })
+        
+        # Write the categorized data to a new raster file
+        with rasterio.open(outputFile, 'w', **output_profile) as dst:
+            dst.write(forest_density_data, 1)
+        
         return outputFile
     
     
@@ -229,7 +304,7 @@ class AutomizedATESAlgorithm(QgsProcessingAlgorithm):
             return originalATESClassification
     
 
-    def find_longest_border_value(self, data, lab, num_labels, valueThatWillBeCastToNeighboring):
+    def find_longest_border_value(self, data, lab, num_labels, valueThatWillBeCastToNeighboring, no_data_value):
         
         rows, cols = data.shape
         result = data.copy()
@@ -255,7 +330,7 @@ class AutomizedATESAlgorithm(QgsProcessingAlgorithm):
                             ni, nj = i + di, j + dj
                             if (ni, nj) not in considered_indices:
                                 if 0 <= ni < rows and 0 <= nj < cols:
-                                    if data[ni, nj] != valueThatWillBeCastToNeighboring:
+                                    if data[ni, nj] != valueThatWillBeCastToNeighboring and data[ni, nj] != no_data_value:
                                         region_value = data[ni, nj]
                                         if region_value in neighbor_counts:
                                             neighbor_counts[region_value] += 1
@@ -270,18 +345,77 @@ class AutomizedATESAlgorithm(QgsProcessingAlgorithm):
 
         QgsMessageLog.logMessage("Number of zones smoothed out:" + str(numberOfZonesSmoothedOut), "AutoATES Bansko 2024")
         return result, numberOfZonesSmoothedOut
+
+    def set_no_data_value(self, input_raster, output_raster, no_data_value):
+    
+        # Open the input raster file
+        with rasterio.open(input_raster) as src:
+            
+            # Read the entire raster into a numpy array
+            forest = src.read(masked=True)  # Read masking of nodata values
+            
+            # Update the metadata to set the nodata value to no_data_value
+            meta = src.meta.copy()
+            meta.update(nodata=no_data_value, dtype=rasterio.float32)  # Change nodata value to no_data_value and data type to float32
+
+            # Replace current nodata with no_data_value in the data
+            forest = numpy.where(forest.mask, no_data_value, forest)
+
+            # Write the modified data to the new raster file
+            with rasterio.open(output_raster, 'w', **meta) as dst:
+                dst.write(forest)  # Write data with new nodata value
+
+        return output_raster
+        
+    def crop_extent_of_second_raster_to_be_same_as_first_raster_and_set_no_data_value(self, first_raster, second_raster, output_raster, no_data_value):
+    
+        # Open the first raster file
+        with rasterio.open(first_raster) as src1:
+            # Read the first raster
+            raster1 = src1.read(masked=True)  # Read with masking of nodata values
+        
+        # Open the second raster file
+        with rasterio.open(second_raster) as src2:
+            # Read the second raster
+            raster2 = src2.read()
+            meta = src2.meta.copy()
+            
+            # Ensure the output nodata value is no_data_value
+            meta.update(nodata=no_data_value, dtype=rasterio.float32)
+        
+            # Mask the second raster with the nodata from the first raster
+            raster2 = numpy.where(raster1.mask, no_data_value, raster2)
+        
+        # Write the modified second raster to a new file
+        with rasterio.open(output_raster, 'w', **meta) as dst:
+            dst.write(raster2)
+        
+        return output_raster
         
    
     def processAlgorithm(self, parameters, context, feedback):
         
         workingDirectory = self.createWorkingDirectory(parameters['FOLDERFORINTERMEDIATEPROCESSING'])
+        no_data_value = -9999
+        
         fluxTestLayer = self.parameterAsRasterLayer(parameters, self.INPUTFLUXLAYER, context)
         slopeLayer = self.parameterAsRasterLayer(parameters, self.INPUTSLOPELAYER, context)
         forestDensityLayer = self.parameterAsRasterLayer(parameters, self.INPUTFORESTDENSITYLAYER, context)
+    
+        QgsMessageLog.logMessage(fluxTestLayer.source(), "AutoATES Bansko 2024")
         
-        fluxCategorizedIntoATESClasses = self.categorizeFluxIntoATESClasses(fluxTestLayer, workingDirectory)
-        slopeBinaryClassified45DegreesAndAbove = self.categorizeSlopeBinary45DegreesAndAbove(slopeLayer, workingDirectory)
-        forestDensityLayerBinaryClassifiedBelow25Percent = self.categorizeForestDensityBinaryBelow25Percent(forestDensityLayer, workingDirectory)
+        slopeLayerPath = self.set_no_data_value(slopeLayer.source(), os.path.join(workingDirectory, "slope.tif"), no_data_value)
+        forestDensityLayerPath = self.set_no_data_value(forestDensityLayer.source(), os.path.join(workingDirectory, "forest_density.tif"), no_data_value)
+        
+        fluxTestLayerPath = self.crop_extent_of_second_raster_to_be_same_as_first_raster_and_set_no_data_value(forestDensityLayerPath, fluxTestLayer.source(), os.path.join(workingDirectory, "flux.tif"), no_data_value)
+        
+        fluxTestLayer = QgsRasterLayer(fluxTestLayerPath, "My Raster Layer")
+        slopeLayer = QgsRasterLayer(slopeLayerPath, "My Raster Layer")
+        forestDensityLayer = QgsRasterLayer(forestDensityLayerPath, "My Raster Layer")
+        
+        fluxCategorizedIntoATESClasses = self.categorizeFluxIntoATESClasses(fluxTestLayer, workingDirectory, no_data_value)
+        slopeBinaryClassified45DegreesAndAbove = self.categorizeSlopeBinary45DegreesAndAbove(slopeLayer, workingDirectory, no_data_value)
+        forestDensityLayerBinaryClassifiedBelow25Percent = self.categorizeForestDensityBinaryBelow25Percent(forestDensityLayer, workingDirectory, no_data_value)
         
         fluxCategorizedIntoATESClassesGdal = gdal.Open(fluxCategorizedIntoATESClasses)
         originalATESClassesArray = numpy.array(fluxCategorizedIntoATESClassesGdal.GetRasterBand(1).ReadAsArray())
@@ -306,6 +440,7 @@ class AutomizedATESAlgorithm(QgsProcessingAlgorithm):
         
         with rasterio.open(fluxCategorizedIntoATESClasses) as src:
             profile = src.profile
+            profile.update({"driver": "GTiff", "nodata": no_data_value, 'dtype': 'int16'})
             with rasterio.open(output_file, 'w', **profile) as dst:
                 dst.write(combined_array, 1)
         
@@ -357,31 +492,24 @@ class AutomizedATESAlgorithm(QgsProcessingAlgorithm):
         
         output_file = os.path.join(workingDirectory, "Lab.tif")
         
-        with rasterio.open(fluxCategorizedIntoATESClasses) as src:
-            profile = src.profile
-            with rasterio.open(output_file, 'w', **profile) as dst:
-                dst.write(lab, 1)
+        with rasterio.open(output_file, 'w', **profile) as dst:
+            dst.write(lab, 1)
         
         output_file = os.path.join(workingDirectory, "Values.tif")
         
-        with rasterio.open(fluxCategorizedIntoATESClasses) as src:
-            profile = src.profile
-            with rasterio.open(output_file, 'w', **profile) as dst:
-                dst.write(values, 1)
+        with rasterio.open(output_file, 'w', **profile) as dst:
+            dst.write(values, 1)
         
         while True:
             
             QgsMessageLog.logMessage("In the loop", "AutoATES Bansko 2024")
-            values, numberOfZonesSmoothedOut = self.find_longest_border_value(values, lab, num_labels, 0)
+            values, numberOfZonesSmoothedOut = self.find_longest_border_value(values, lab, num_labels, 0, no_data_value)
             if numberOfZonesSmoothedOut == 0:
                 break
                 
         output_file = os.path.join(parameters["OUTPUTFOLDER"], "FinalATES.tif")
-        with rasterio.open(fluxCategorizedIntoATESClasses) as src:
-            profile = src.profile
-            profile.update({"driver": "GTiff", "nodata": -9999, 'dtype': 'int16'})
-            with rasterio.open(output_file, 'w', **profile) as dst:
-                dst.write(values, 1)
+        with rasterio.open(output_file, 'w', **profile) as dst:
+            dst.write(values, 1)
 
         return {}
         
